@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- ===================== PRIMARY SEO ===================== -->
+    <!--
+      These are the English homepage's values, so `npm run dev` looks right.
+      scripts/prerender.mjs rewrites the title, description, robots, canonical,
+      <html lang>, og:locale and the social tags for every route from
+      src/pages/pageMeta.ts, so that module is the source of truth for what ships.
+    -->
+    <title>Old South End Partnership | Housing in Toledo’s Old South End</title>
+    <meta name="description" content="Ten Toledo organizations working together so Old South End neighbors can find, keep, and strengthen their homes. Meet the partners and see our progress." />
+    <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1" />
+    <link rel="canonical" href="https://www.oseptoledo.org/" />
+
+    <!-- ===================== LANGUAGES ===================== -->
+    <!--
+      The same on both language versions: each page lists the full set,
+      itself included. Removed from the noindex 404 page by the prerender.
+    -->
+    <link rel="alternate" hreflang="en" href="https://www.oseptoledo.org/" />
+    <link rel="alternate" hreflang="es" href="https://www.oseptoledo.org/es" />
+    <link rel="alternate" hreflang="x-default" href="https://www.oseptoledo.org/" />
+
+    <!-- ===================== GEO / LOCAL SEO ===================== -->
+    <meta name="geo.region" content="US-OH" />
+    <meta name="geo.placename" content="Toledo, Ohio" />
+
+    <!-- ===================== OPEN GRAPH ===================== -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Old South End Partnership" />
+    <meta property="og:title" content="Old South End Partnership | Housing in Toledo’s Old South End" />
+    <meta property="og:description" content="Ten Toledo organizations working together so Old South End neighbors can find, keep, and strengthen their homes. Meet the partners and see our progress." />
+    <meta property="og:url" content="https://www.oseptoledo.org/" />
+    <meta property="og:image" content="https://www.oseptoledo.org/images/og-image.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Colorful storefronts along Broadway in the Old South End" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:locale:alternate" content="es_US" />
+
+    <!-- ===================== TWITTER CARD ===================== -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Old South End Partnership | Housing in Toledo’s Old South End" />
+    <meta name="twitter:description" content="Ten Toledo organizations working together so Old South End neighbors can find, keep, and strengthen their homes. Meet the partners and see our progress." />
+    <meta name="twitter:image" content="https://www.oseptoledo.org/images/og-image.jpg" />
+    <meta name="twitter:image:alt" content="Colorful storefronts along Broadway in the Old South End" />
+
+    <!-- ===================== THEME / ICONS ===================== -->
+    <meta name="theme-color" content="#FBF6EC" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <!-- ===================== STRUCTURED DATA ===================== -->
+    <!--
+      One @graph, identical on every route, describing the partnership as an
+      entity for search and answer engines: the Organization, its ten member
+      organizations, its two funders, the place it serves, the site, and the
+      press that has covered it. Sourced from src/content/ (partners.ts, news.ts)
+      and src/constants/site.ts; src/__tests__/entity-graph.test.ts fails if any
+      node drifts from those modules. A data block that CSP never evaluates, so
+      editing it needs no hash change.
+    -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "Organization",
+          "@id": "https://www.oseptoledo.org/#organization",
+          "name": "Old South End Partnership",
+          "alternateName": ["OSE Partnership", "OSEP"],
+          "url": "https://www.oseptoledo.org/",
+          "logo": {
+            "@type": "ImageObject",
+            "url": "https://www.oseptoledo.org/images/osep-mark-512.png",
+            "width": 512,
+            "height": 512
+          },
+          "image": "https://www.oseptoledo.org/images/og-image.jpg",
+          "description": "The Old South End Partnership exists to accelerate the renewal of Toledo’s Old South End through coordinated, data-driven, and community-led investment in housing, infrastructure, and quality of life.",
+          "foundingDate": "2025-09",
+          "knowsLanguage": ["en", "es"],
+          "areaServed": { "@id": "https://www.oseptoledo.org/#old-south-end" },
+          "member": [
+            { "@id": "https://www.oseptoledo.org/#partner-historic-south" },
+            { "@id": "https://www.oseptoledo.org/#partner-jhe-foundation" },
+            { "@id": "https://www.oseptoledo.org/#partner-ladderup-housing" },
+            { "@id": "https://www.oseptoledo.org/#partner-lucas-county-land-bank" },
+            { "@id": "https://www.oseptoledo.org/#partner-mv-habitat" },
+            { "@id": "https://www.oseptoledo.org/#partner-toledo-lisc" },
+            { "@id": "https://www.oseptoledo.org/#partner-believe-center" },
+            { "@id": "https://www.oseptoledo.org/#partner-fair-housing-center" },
+            { "@id": "https://www.oseptoledo.org/#partner-gtcf" },
+            { "@id": "https://www.oseptoledo.org/#partner-sofia-quintero" }
+          ],
+          "funder": [
+            { "@id": "https://www.oseptoledo.org/#partner-jhe-foundation" },
+            { "@id": "https://www.oseptoledo.org/#partner-gtcf" }
+          ],
+          "subjectOf": [
+            { "@id": "https://www.oseptoledo.org/#news-2026-05-14-toledo-city-paper" },
+            { "@id": "https://www.oseptoledo.org/#news-2026-03-19-13abc" },
+            { "@id": "https://www.oseptoledo.org/#news-2026-03-19-toledo-today" }
+          ]
+        },
+        {
+          "@type": "Place",
+          "@id": "https://www.oseptoledo.org/#old-south-end",
+          "name": "Old South End",
+          "containedInPlace": {
+            "@type": "City",
+            "name": "Toledo",
+            "containedInPlace": { "@type": "State", "name": "Ohio" }
+          }
+        },
+        {
+          "@type": "WebSite",
+          "@id": "https://www.oseptoledo.org/#website",
+          "url": "https://www.oseptoledo.org/",
+          "name": "Old South End Partnership",
+          "inLanguage": ["en", "es"],
+          "dateModified": "2026-10-09",
+          "publisher": { "@id": "https://www.oseptoledo.org/#organization" }
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://www.oseptoledo.org/#partner-historic-south",
+          "name": "Historic South Initiative",
+          "url": "https://www.historicsouth.org/"
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://www.oseptoledo.org/#partner-jhe-foundation",
+          "name": "John Henry Eldred Jr. Foundation",
+          "url": "https://www.jhefoundation.org/"
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://www.oseptoledo.org/#partner-ladderup-housing",
+          "name": "LadderUp Housing",
+          "url": "https://www.ladderuphousing.com/"
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://www.oseptoledo.org/#partner-lucas-county-land-bank",
+          "name": "Lucas County Land Bank",
+          "url": "https://lucascountylandbank.org/"
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://www.oseptoledo.org/#partner-mv-habitat",
+          "name": "Maumee Valley Habitat for Humanity",
+          "url": "https://mvhabitat.org/"
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://www.oseptoledo.org/#partner-toledo-lisc",
+          "name": "Toledo LISC",
+          "url": "https://www.lisc.org/toledo/"
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://www.oseptoledo.org/#partner-believe-center",
+          "name": "The Believe Center",
+          "url": "https://www.believecenter.org/"
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://www.oseptoledo.org/#partner-fair-housing-center",
+          "name": "The Fair Housing Center",
+          "url": "https://toledofhc.org/"
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://www.oseptoledo.org/#partner-gtcf",
+          "name": "Greater Toledo Community Foundation",
+          "url": "https://toledocf.org/"
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://www.oseptoledo.org/#partner-sofia-quintero",
+          "name": "Sofia Quintero Art & Cultural Center",
+          "url": "https://sqacc.org/"
+        },
+        {
+          "@type": "NewsArticle",
+          "@id": "https://www.oseptoledo.org/#news-2026-05-14-toledo-city-paper",
+          "headline": "Old South End Partnership Focuses On Neighborhood's Housing Challenges",
+          "url": "https://toledocitypaper.com/the-city/old-south-end-partnership-focuses-on-neighborhoods-housing-challenges/",
+          "datePublished": "2026-05-14",
+          "inLanguage": "en",
+          "publisher": { "@type": "Organization", "name": "Toledo City Paper" },
+          "about": { "@id": "https://www.oseptoledo.org/#organization" }
+        },
+        {
+          "@type": "NewsArticle",
+          "@id": "https://www.oseptoledo.org/#news-2026-03-19-13abc",
+          "headline": "Local partnership works to strengthen the foundation of the Old South End",
+          "url": "https://www.13abc.com/2026/03/19/local-partnership-works-strengthen-foundation-old-south-end/",
+          "datePublished": "2026-03-19",
+          "inLanguage": "en",
+          "publisher": { "@type": "Organization", "name": "13ABC" },
+          "about": { "@id": "https://www.oseptoledo.org/#organization" }
+        },
+        {
+          "@type": "NewsArticle",
+          "@id": "https://www.oseptoledo.org/#news-2026-03-19-toledo-today",
+          "headline": "Old South End Partnership Launches $1 Million Housing Pilot",
+          "url": "https://nationaltoday.com/us/oh/toledo/news/2026/03/19/old-south-end-partnership-launches-1-million-housing-pilot/",
+          "datePublished": "2026-03-19",
+          "inLanguage": "en",
+          "publisher": { "@type": "Organization", "name": "Toledo Today" },
+          "about": { "@id": "https://www.oseptoledo.org/#organization" }
+        }
+      ]
+    }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

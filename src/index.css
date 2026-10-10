@@ -1,0 +1,203 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens, taken from the partnership's design canvas (Maria Iafelice,
+ * September 2026). Tailwind's default palette is switched off so every color in
+ * a component is one of these; add a token here rather than reaching for an
+ * arbitrary hex in a class.
+ *
+ * The seven ribbon colors are the brand mark (src/components/BrandMark.tsx) and
+ * the ribbon band under the hero. Contrast of the text pairings the components
+ * use was checked against WCAG AA: brick on cream 5.1:1, white on brick 5.5:1,
+ * stone on cream 7.0:1, marigold on ink 8.9:1, marigold on navy-light 5.0:1.
+ */
+@theme {
+  --color-*: initial;
+  --color-white: #ffffff;
+
+  /* Surfaces and text */
+  --color-cream: #fbf6ec;
+  --color-ink: #211e1b;
+  --color-line: #e6ddcb;
+  --color-stone: #5a534c;
+  --color-umber: #3d3833;
+  --color-sand: #d9d1c3;
+  --color-pebble: #8a8178;
+  --color-navy: #1f3a5f;
+  --color-navy-light: #29486f;
+  --color-landbank: #1f2a5c;
+
+  /* Ribbon colors, top to bottom */
+  --color-brick: #c8283c;
+  --color-brick-dark: #a91f31; /* hover state of brick buttons */
+  --color-lagoon: #1fa3a8;
+  --color-marigold: #f2b21b;
+  --color-plum: #7a3fa0;
+  --color-tangerine: #e86a2c;
+  --color-cobalt: #2f54c4;
+  --color-leaf: #2e9e5b;
+
+  --font-sans: "Bricolage Grotesque Variable", "Bricolage Grotesque", ui-sans-serif, system-ui,
+    sans-serif;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+  }
+
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    background-color: var(--color-cream);
+    color: var(--color-ink);
+    /*
+     * Safety net against sideways scrolling on phones if something ever
+     * overflows. `clip`, not `hidden`: hidden would make body a scroll
+     * container and break the sticky header. Layout bugs still need fixing at
+     * the source; this only keeps one from turning into a sideways-scrolling page.
+     */
+    overflow-x: clip;
+  }
+
+  /* A long word ("organizaciones") must wrap rather than widen a narrow phone. */
+  h1,
+  h2,
+  h3,
+  h4 {
+    overflow-wrap: break-word;
+  }
+
+  /* Anchored sections land below the sticky header (64px, 88px from xl). */
+  section[id] {
+    scroll-margin-top: 4rem;
+  }
+  @media (width >= 80rem) {
+    section[id] {
+      scroll-margin-top: 88px;
+    }
+  }
+
+  /*
+   * One visible focus ring everywhere: cobalt on light surfaces (6.1:1 on
+   * cream), marigold inside dark sections, which opt in with `.on-dark`.
+   */
+  :focus-visible {
+    outline: 3px solid var(--color-cobalt);
+    outline-offset: 2px;
+  }
+  .on-dark :focus-visible {
+    outline-color: var(--color-marigold);
+  }
+
+  ::selection {
+    background-color: var(--color-marigold);
+    color: var(--color-ink);
+  }
+}
+
+@layer components {
+  /* 1200px of content at 1440 (120px each side), 20px gutters on phones. */
+  .site-container {
+    width: 100%;
+    max-width: calc(1200px + 5rem);
+    margin-inline: auto;
+    padding-inline: 1.25rem;
+  }
+  @media (width >= 48rem) {
+    .site-container {
+      padding-inline: 2.5rem;
+    }
+  }
+
+  /* Small all-caps label above a heading. Written in sentence case in the copy. */
+  .eyebrow {
+    font-weight: 700;
+    font-size: 0.75rem;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+  }
+  @media (width >= 48rem) {
+    .eyebrow {
+      font-size: 0.875rem;
+      letter-spacing: 4px;
+    }
+  }
+
+  .section-title {
+    margin: 0;
+    font-weight: 700;
+    font-size: 1.875rem;
+    line-height: 1.15;
+  }
+  @media (width >= 48rem) {
+    .section-title {
+      font-size: 2.75rem;
+      line-height: 1.1;
+    }
+  }
+
+  /* Pill buttons. 52px tall on phones, 56px from md (44px minimum target). */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 52px;
+    padding-inline: 1.75rem;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 1rem;
+    text-decoration: none;
+    transition:
+      background-color 150ms ease,
+      color 150ms ease,
+      border-color 150ms ease;
+  }
+  @media (width >= 48rem) {
+    .btn {
+      min-height: 56px;
+      font-size: 1.0625rem;
+    }
+  }
+  .btn-ink {
+    background-color: var(--color-ink);
+    color: var(--color-cream);
+  }
+  .btn-ink:hover {
+    background-color: var(--color-umber);
+  }
+  .btn-outline {
+    border: 2px solid var(--color-ink);
+    color: var(--color-ink);
+  }
+  .btn-outline:hover {
+    background-color: var(--color-ink);
+    color: var(--color-cream);
+  }
+  .btn-brick {
+    background-color: var(--color-brick);
+    color: var(--color-white);
+  }
+  .btn-brick:hover {
+    background-color: var(--color-brick-dark);
+  }
+
+  .text-link {
+    font-weight: 700;
+    color: var(--color-brick);
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 4px;
+  }
+  .text-link:hover {
+    color: var(--color-ink);
+  }
+}

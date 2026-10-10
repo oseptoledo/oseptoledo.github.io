@@ -1,0 +1,171 @@
+# Checks every pull request to main. Three jobs:
+#   check       the site: no file in public/ changed in place, npm ci, lint,
+#               type check and build, tests
+#   lighthouse  Lighthouse scores of the built site (after check passes)
+#   infra       the AWS CDK app in infra/: npm ci, type check, tests, and
+#               cdk synth in both DNS modes (in parallel with check)
+# Nothing here deploys, and no job can get AWS credentials.
+#
+# Every action is pinned to a full commit SHA with its version in a trailing
+# comment, as in deploy.yml. Dependabot (.github/dependabot.yml,
+# github-actions) updates the SHA and the comment together.
+
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # On a pull_request run HEAD is the merge commit, so HEAD^1 is main
+          # as this PR would merge into it. The next step compares the two.
+          fetch-depth: 2
+
+      - name: Files in public/ keep their bytes (rename to change)
+        # The Deploy workflow uploads every file outside the pages and the three
+        # metadata files as `immutable` for a year and never invalidates them,
+        # so new bytes under an old name (a partner's new logo saved over the
+        # old one, a favicon tweak) would deploy green while returning visitors
+        # and CloudFront edges kept the old file, and nothing can recall it from
+        # browser caches. A changed file needs a new name (-v2). Only files
+        # modified in place fail (--diff-filter=M): an added, deleted or
+        # renamed file passes.
+        #
+        # Keep these excludes identical to the files deploy.yml uploads with a
+        # short cache lifetime (its `for file in ...` list);
+        # src/__tests__/deploy-workflow.test.ts checks that they match.
+        run: |
+          changed=$(git diff --diff-filter=M --name-only HEAD^1 HEAD -- public/ \
+            ':(exclude)public/sitemap.xml' ':(exclude)public/llms.txt' ':(exclude)public/robots.txt')
+          if [ -n "$changed" ]; then
+            while IFS= read -r f; do
+              echo "::error file=$f::$f changed under the same name. The deploy caches it for a year (immutable) and never invalidates it. Save it under a new name (-v2) and update its references (src/content/images.ts, partners.ts, or index.html for og-image.jpg, osep-mark-512.png and the favicons). A file that must keep its name (for example a future .well-known/security.txt) belongs in deploy.yml's short-cache list instead, and in this step's excludes."
+            done <<< "$changed"
+            exit 1
+          fi
+          echo "No file in public/ was changed in place."
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check & build
+        run: npm run build
+
+      - name: Run tests
+        run: npm test
+
+  lighthouse:
+    runs-on: ubuntu-latest
+    needs: check
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build site
+        run: npm run build
+
+      - name: Run Lighthouse CI
+        # Thresholds in .lighthouserc.json: perf/best-practices > 90, a11y/SEO > 95.
+        # lhci autorun starts `npm run preview` itself, runs Lighthouse 3x, asserts.
+        # Uses the pinned @lhci/cli from package-lock.json (no npx at runtime).
+        run: npm run lighthouse
+
+  infra:
+    # infra/ is its own npm package (own package.json and lockfile), so the
+    # check job never reaches it. This job runs on every pull request, not
+    # only those that touch infra/, because infra/'s tests depend on three
+    # site files: the contact Lambda's drift tests read src/lib/contactForm.ts
+    # and src/content/copy.ts, and test/canonical-host.test.ts imports
+    # normalizePath() from src/paths.ts (so infra's tsc type-checks it) and
+    # holds it to functions/canonical-host.js. A site-only change can break
+    # any of them. Dependabot's /infra pull requests (the aws-cdk group and
+    # the rest) are checked here too.
+    #
+    # No AWS access, on purpose: no `id-token: write`, no AWS credentials step,
+    # no secrets. None of these commands needs an account. `cdk synth` runs
+    # the app locally and writes CloudFormation templates to cdk.out/: the
+    # stacks make no context lookups, the region is fixed in code (us-east-1)
+    # and the account is left unresolved when no credentials exist
+    # (CDK_DEFAULT_ACCOUNT unset), exactly as when a person runs synth with
+    # credentials switched off. cdk-nag runs inside every synth, so a finding
+    # fails the job. `cdk diff` and `cdk deploy` do need the account, and stay
+    # with a person (infra/README.md).
+    runs-on: ubuntu-latest
+
+    env:
+      # There are no AWS credentials to find on this runner. This keeps the
+      # AWS SDK inside the CDK CLI from probing the runner's instance-metadata
+      # address for some.
+      AWS_EC2_METADATA_DISABLED: 'true'
+
+    defaults:
+      run:
+        working-directory: infra
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: infra/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        # tsc --noEmit: nothing is compiled to disk (cdk.json runs the app
+        # through ts-node).
+        run: npm run build
+
+      - name: Run tests
+        # Vitest (the stacks' templates, the canonical-host function, the DNS
+        # records, the settings, cdk-nag), then node --test (the contact
+        # Lambda, including its drift checks against the site's form).
+        run: npm test
+
+      - name: Synthesize (Route 53 DNS)
+        # The mode is named here, not taken from cdk.json: once the launch
+        # records dnsProvider=external there (infra/README.md step 4), a plain
+        # `cdk synth` would build the external app twice and OsepDnsStack
+        # never. Two warnings are expected until people act, and do not fail
+        # the step: the empty lib/dns-records.ts and the githubRepo placeholder.
+        run: npx cdk synth -c dnsProvider=route53
+
+      - name: Synthesize (external DNS)
+        # The GoDaddy-DNS mode (OsepWebsiteStack only). Expected warning: the
+        # githubRepo placeholder.
+        run: npx cdk synth -c dnsProvider=external

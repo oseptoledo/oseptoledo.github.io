@@ -1,0 +1,91 @@
+# Temporary preview on GitHub Pages: https://oseptoledo.github.io
+#
+# Publishes the site so partners can review it while the AWS hosting
+# (infra/, deploy.yml) is being set up. It is public (anyone with the link) but
+# marked noindex, nofollow, with a robots.txt that disallows everything, so
+# search engines do not index it ahead of the real launch at
+# www.oseptoledo.org (scripts/make-preview.mjs). It serves the site exactly as
+# built; there are no CloudFront security headers, and the contact form uses its
+# email-app fallback, since CONTACT_FORM_ENDPOINT is null.
+#
+# Why this repository is named oseptoledo.github.io: GitHub serves an
+# organization's <org>.github.io repository at the root of that host. The site
+# links to /es, /images/... and /assets/... from the root, so a project page at
+# https://oseptoledo.github.io/<repo>/ would break every one of them.
+#
+# Retire it when the site is live on AWS: delete this file and
+# scripts/make-preview.mjs (with its test and .d.mts), and turn off Pages in the
+# repository settings (Settings > Pages). docs/LAUNCH_CHECKLIST.md tracks it.
+#
+# Actions are pinned by full commit SHA with the version in a comment, like
+# ci.yml and deploy.yml.
+name: Preview (GitHub Pages)
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'infra/**'
+      - '**/*.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One publish at a time; a newer push waits rather than cancelling a deploy
+# halfway.
+concurrency:
+  group: pages-preview
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check & build
+        run: npm run build
+
+      # The same guards the AWS deploy runs: served HTML, hydration, CSP
+      # compatibility. They must see the production build, so they run before
+      # the preview changes below.
+      - name: Run tests
+        run: npm test
+
+      - name: Mark the build as a preview (noindex, robots.txt disallow)
+        run: node scripts/make-preview.mjs dist
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # The only job with write access, and it runs no repository code.
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

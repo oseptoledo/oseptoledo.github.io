@@ -1,0 +1,142 @@
+# Dependabot: grouped dependency updates. Minor and patch updates land as one
+# PR per group; majors open individually so each gets its own review,
+# including major security bumps (hence the minor+patch filter on every group).
+# Two npm packages: the site at the root and the AWS CDK app in infra/ (its own
+# package.json and lockfile). Schedule: site and Actions weekly, Mondays 09:00
+# America/New_York; infra/ monthly, on the 1st, 09:00 America/New_York.
+# Security updates ignore the schedule and open as soon as an advisory appears,
+# provided the repository's "Dependabot security updates" setting is on (a
+# switch separate from Dependabot alerts, and not set by this file; the
+# security-updates groups below do nothing without it). infra/README.md step
+# 0.3 turns it on.
+version: 2
+
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    groups:
+      production-dependencies:
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+      development-dependencies:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+      security-updates:
+        applies-to: "security-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # typescript-eslint 8.x declares a peer range on typescript that stops
+      # short of 7.x, so a TypeScript 7 bump makes `npm ci` fail with ERESOLVE
+      # (npm refuses to install a peer outside the declared range) and every
+      # CI job dies at install. Remove once typescript-eslint publishes a
+      # release whose peer range includes 7.x.
+      - dependency-name: "typescript"
+        update-types:
+          - "version-update:semver-major"
+      # @types/node tracks the Node major that CI and .nvmrc pin (24). It moves
+      # by hand in the PR that moves the runtime, never ahead of it.
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
+
+  # The AWS CDK app. CI's `infra` job (.github/workflows/ci.yml) runs, in
+  # infra/, on each of these PRs:
+  #   npm ci && npm run build && npm test &&
+  #   npx cdk synth -c dnsProvider=route53 && npx cdk synth -c dnsProvider=external
+  # with no AWS access. A merged bump changes nothing in AWS until a person
+  # runs `cdk deploy`; a bump that changes the synthesized templates shows up
+  # in `cdk diff`, which only a person with access can run, on the PR's branch
+  # after `npm ci` in infra/ (infra/README.md, Day to day).
+  #
+  # Monthly, not weekly: a PR that moves aws-cdk-lib, aws-cdk or constructs
+  # needs that credentialed diff (and, if it shows changes, a deploy the same
+  # week), which is more than two volunteer maintainers can keep up with every
+  # week. The monthly upkeep in infra/README.md (Day to day) handles these PRs
+  # and checks that main matches the live stacks. Security updates ignore this
+  # schedule and still open as soon as an advisory appears (with the setting
+  # at the top of this file on).
+  - package-ecosystem: "npm"
+    directory: "/infra"
+    schedule:
+      interval: "monthly"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    groups:
+      # aws-cdk-lib (the library) and aws-cdk (the CLI) always move in one PR:
+      # the CLI has to read the cloud-assembly schema the library writes, and
+      # infra/CLAUDE.md says to bump them together. Listed first because a
+      # dependency joins the first group it matches, so these two never land
+      # in the production/development groups below.
+      aws-cdk:
+        patterns:
+          - "aws-cdk-lib"
+          - "aws-cdk"
+        update-types:
+          - "minor"
+          - "patch"
+      production-dependencies:
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+      development-dependencies:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+      security-updates:
+        applies-to: "security-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # infra/ stays on TypeScript 5.x. cdk.json runs the app through ts-node,
+      # which uses TypeScript's JavaScript compiler API, and ts-node does not
+      # support TypeScript 7 (the native compiler). Moving to a new major is a
+      # deliberate change, checked with build, test and both synths, not a bot PR.
+      - dependency-name: "typescript"
+        update-types:
+          - "version-update:semver-major"
+      # @types/node follows the Node major the contact Lambda runs on
+      # (NODEJS_24_X) and that CI and .nvmrc pin (24). It moves by hand in the
+      # PR that moves the runtime, never ahead of it.
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    groups:
+      github-actions:
+        update-types:
+          - "minor"
+          - "patch"

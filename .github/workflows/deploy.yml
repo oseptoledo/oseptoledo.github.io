@@ -1,0 +1,564 @@
+# Deploy the built site to the partnership's S3 bucket, served by CloudFront.
+#
+# Runs on every push to main that can change what the site serves, and by hand
+# from the Actions tab (Deploy > Run workflow, branch main). Pull requests never
+# deploy; ci.yml checks them.
+#
+# Two jobs, and why:
+#   build   checks out the code and runs npm ci, the build and the tests: about
+#           600 third-party packages' code (Vite and its plugins, the test
+#           runner, jsdom, every install script). It has read access to the
+#           repository and nothing else: no OIDC token, no AWS credentials, and
+#           no GitHub token left in .git/config. It hands dist/ and the route
+#           manifest to the next job as an artifact.
+#   deploy  holds the only `id-token: write` in this workflow, and runs no
+#           checkout, no npm and nothing from the artifact: only the pinned
+#           actions below and the shell and Node written in this file. A
+#           dependency gone bad during the build therefore cannot request the
+#           OIDC token, assume the deploy role, or plant a command on PATH or a
+#           variable in GITHUB_ENV for the steps that hold AWS keys (each job
+#           starts from a clean runner). It can still change what the build
+#           produces, and that ships, as it would with any build; the lockfile's
+#           integrity hashes are the guard there.
+#
+# Order of operations, and why it is this order:
+#   1. Build and test (job build). `npm test` includes the served-HTML and
+#      hydration guards, which read the very files the deploy job uploads, so
+#      nothing ships unless they pass.
+#   2. Read dist-ssr/route-manifest.json and stop if it is missing or partial
+#      (job deploy, before any credentials exist). Every S3 key this workflow
+#      names comes from it.
+#   3. Upload new and changed files WITHOUT deleting anything, so the new hashed
+#      CSS and JS are in the bucket before any page refers to them.
+#   4. Upload the pages and the metadata files with short cache lifetimes. From
+#      this moment visitors get the new site.
+#   5. Invalidate those paths in CloudFront and wait until every edge location
+#      has dropped its old copy.
+#   6. Only then delete what the build no longer produces (old hashed assets,
+#      renamed images, a removed page). Deleting during step 3 would open a
+#      window in which the live HTML points at CSS and JS that are already gone.
+#
+# Settings: three repository VARIABLES (Settings > Secrets and variables >
+# Actions > Variables tab), each copied from an output of the infra stack:
+#   AWS_ROLE_ARN                 <- DeployRoleArn
+#   S3_BUCKET_NAME               <- SiteBucketName
+#   CLOUDFRONT_DISTRIBUTION_ID   <- DistributionId
+# No AWS keys are stored anywhere. The deploy job exchanges GitHub's OIDC token
+# for short-lived credentials from the deploy role, whose trust policy accepts
+# this repository's main branch and nothing else. None of the three values
+# grants anything by itself, which is why they are variables and not secrets
+# (and a job-level `if` can read `vars`, but not `secrets`).
+#
+# Do not add `environment:` to either job. It changes the OIDC subject claim
+# from repo:<owner>/<repo>:ref:refs/heads/main to
+# repo:<owner>/<repo>:environment:<name>, and the deploy role would refuse it.
+# If a GitHub environment with required reviewers is ever wanted, change the
+# role's trust condition in infra/ in the same pull request.
+#
+# Every action is pinned to a full commit SHA, with its version in a trailing
+# comment. The deploy job can request the OIDC token that unlocks the deploy
+# role, and the build job's output is what it ships, so a tag someone moves
+# must not change the code that runs here. Dependabot (.github/dependabot.yml,
+# github-actions) updates the SHA and the comment together; keep it that way in
+# ci.yml too. upload-artifact and download-artifact move together (same
+# @actions/artifact major).
+
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      # The CDK app in infra/ is deployed by a person, not by this workflow,
+      # and documentation never reaches the bucket.
+      - 'infra/**'
+      - '**/*.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+# Nothing at workflow level: each job names exactly what it needs.
+permissions: {}
+
+# One deploy at a time, and a newer push waits rather than cancelling the one
+# in progress: a cancelled run could stop between uploading the new pages and
+# pruning the old files, or mid-way through either.
+concurrency:
+  group: osep-website-deploy
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Skipped, not failed, until all three variables are set. Before the AWS
+    # account and the infra stack exist they are unset, and without this
+    # condition every push to main would end in a red X at the credentials
+    # step, training everyone to ignore this workflow. An unset variable reads
+    # as ''. Once all three are set, the next push to main (or Run workflow)
+    # deploys. The deploy job repeats the condition, and needs this job anyway.
+    if: ${{ vars.AWS_ROLE_ARN != '' && vars.S3_BUCKET_NAME != '' && vars.CLOUDFRONT_DISTRIBUTION_ID != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read # to check out the code; nothing else
+
+    steps:
+      - name: Check deploy settings
+        # Fail in seconds, before the build, on two mistakes that would
+        # otherwise fail late or do something strange:
+        #   - Run workflow started from a branch other than main. The deploy
+        #     role trusts refs/heads/main only, so AWS would refuse the
+        #     credentials after the build and tests; say so plainly instead.
+        #   - A variable pasted in the wrong shape: an s3:// URL or a
+        #     bucket/prefix instead of the bare bucket name, or the
+        #     distribution's domain instead of its ID. A slash in the bucket
+        #     value would make the syncs below write, and prune, under a prefix
+        #     instead of the bucket root.
+        # Values are not echoed: they are not secret, but logs need not carry
+        # them.
+        env:
+          ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+          SITE_BUCKET: ${{ vars.S3_BUCKET_NAME }}
+          DISTRIBUTION_ID: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Deploys run from main only (this run is on $GITHUB_REF). The deploy role trusts refs/heads/main and nothing else."
+            exit 1
+          fi
+          role_re='^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$'
+          bucket_re='^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+          distribution_re='^[A-Z0-9]+$'
+          if ! [[ "$ROLE_ARN" =~ $role_re ]]; then
+            echo "::error::Repository variable AWS_ROLE_ARN is not an IAM role ARN (arn:aws:iam::<12-digit account>:role/<name>). Copy the infra stack's DeployRoleArn output."
+            exit 1
+          fi
+          if ! [[ "$SITE_BUCKET" =~ $bucket_re ]]; then
+            echo "::error::Repository variable S3_BUCKET_NAME must be a bare bucket name, with no s3:// and no slash. Copy the infra stack's SiteBucketName output."
+            exit 1
+          fi
+          if ! [[ "$DISTRIBUTION_ID" =~ $distribution_re ]]; then
+            echo "::error::Repository variable CLOUDFRONT_DISTRIBUTION_ID must be the distribution ID (capital letters and digits), not its domain name. Copy the infra stack's DistributionId output."
+            exit 1
+          fi
+          echo "Deploy settings look right."
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No GitHub token left in .git/config for the npm steps below to read.
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check & build
+        run: npm run build
+
+      - name: Run tests
+        # After the build on purpose: dist-html.test.ts, hydration.test.tsx and
+        # route-manifest.test.ts read dist/ and dist-ssr/, i.e. exactly what
+        # the deploy job uploads. A failure here stops the deploy with the live
+        # site untouched.
+        run: npm test
+
+      - name: Hand the build to the deploy job
+        # dist/ (what ships) and the route manifest (what the deploy job's
+        # uploads, invalidation and prune are driven by), nothing else. Hidden
+        # files are included so the artifact is all of dist/: a dotfile left
+        # out here (a future .well-known/, say) would also be deleted from the
+        # bucket by the prune's --delete. Kept one day: it is only for this run.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: site
+          path: |
+            dist/
+            dist-ssr/route-manifest.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    needs: build
+    if: ${{ vars.AWS_ROLE_ARN != '' && vars.S3_BUCKET_NAME != '' && vars.CLOUDFRONT_DISTRIBUTION_ID != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The only job that can request the OIDC token the deploy role trusts. It
+    # needs no repository access: no checkout, and the artifact comes from this
+    # run, which needs no token permission. Run nothing from the artifact here.
+    permissions:
+      id-token: write
+
+    # Passed to the shell through the environment rather than spliced into
+    # scripts with ${{ }}, so a value is only ever data, never shell syntax.
+    env:
+      SITE_BUCKET: ${{ vars.S3_BUCKET_NAME }}
+      DISTRIBUTION_ID: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}
+
+    steps:
+      - name: Download the build
+        # Restores dist/ and dist-ssr/route-manifest.json into the empty
+        # workspace. Data only: nothing below executes a file from it.
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: site
+
+      - name: Read the route manifest
+        # scripts/prerender.mjs writes dist-ssr/route-manifest.json during the
+        # build (job build), derived from the route registry in
+        # src/entry-prerender.tsx:
+        #   { "shell": "index.html", "errorPage": "404.html", "extensionless": ["es"] }
+        #   shell          served at / (the distribution's defaultRootObject)
+        #   errorPage      the body of every 404 (the distribution's one
+        #                  errorResponses entry names /404.html)
+        #   extensionless  every other page, as the S3 key it is served under
+        #                  (/es is the key `es`, built as dist/es.html)
+        # The upload, prune and invalidation lists below all come from this one
+        # file, so adding a page to the registry needs no edit here. The
+        # manifest sits in dist-ssr/, not dist/, so it is never uploaded.
+        #
+        # Missing, unreadable or partial is a hard stop, never "nothing to do".
+        # The prune step syncs with --delete, and the live /es page survives it
+        # only because its key is excluded by name. An empty page list would
+        # delete /es from production. If the site ever really has no page other
+        # than / and the 404, change this guard deliberately.
+        #
+        # Also checked here, and in this order, so the bucket never starts to
+        # change on a bad build (no AWS credentials exist in this job until the
+        # next step):
+        #   - every file the upload steps copy by name is in dist/, so no copy
+        #     can fail after the bucket has started to change;
+        #   - nothing was built under dist/api/. CloudFront sends /api/* to the
+        #     contact-form Lambda, never to S3, so a file there could never be
+        #     served; it would mean something landed in public/api/ by mistake.
+        # The manifest came out of the build job, so it is checked as data: the
+        # keys must match the pattern below before they reach GITHUB_ENV, S3
+        # keys or --exclude patterns. The script is this file's own code, run on
+        # the runner's preinstalled Node (no setup, no npm in this job).
+        run: |
+          node --input-type=module - <<'NODE'
+          import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+
+          const MANIFEST = 'dist-ssr/route-manifest.json';
+          // One lowercase kebab-case segment, as scripts/prerender.mjs enforces.
+          // Re-checked here because the keys are split on spaces and used as S3
+          // keys and --exclude patterns below.
+          const KEY = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+          const problems = [];
+          const stopIfProblems = () => {
+            if (problems.length === 0) return;
+            for (const problem of problems) console.log(`::error::${problem}`);
+            console.log('::error::Refusing to deploy: the --delete prune must never run against a partial route list.');
+            process.exit(1);
+          };
+
+          if (!existsSync(MANIFEST)) {
+            problems.push(`${MANIFEST} is missing. npm run build (scripts/prerender.mjs) writes it.`);
+          }
+          stopIfProblems();
+
+          let manifest;
+          try {
+            manifest = JSON.parse(readFileSync(MANIFEST, 'utf8'));
+          } catch (err) {
+            problems.push(`${MANIFEST} is not valid JSON: ${err.message}`);
+          }
+          stopIfProblems();
+
+          const { shell, errorPage, extensionless } = manifest ?? {};
+          if (shell !== 'index.html') {
+            problems.push(`shell is ${JSON.stringify(shell)}, but the distribution serves / from index.html.`);
+          }
+          if (errorPage !== '404.html') {
+            problems.push(`errorPage is ${JSON.stringify(errorPage)}, but the distribution's 404 response is /404.html.`);
+          }
+          if (!Array.isArray(extensionless) || extensionless.length === 0) {
+            problems.push(`extensionless is ${JSON.stringify(extensionless)}; expected a non-empty list of page keys.`);
+          } else {
+            const seen = new Set();
+            for (const key of extensionless) {
+              if (typeof key !== 'string' || !KEY.test(key)) {
+                problems.push(`extensionless key ${JSON.stringify(key)} is not one lowercase kebab-case segment.`);
+              } else if (seen.has(key)) {
+                problems.push(`extensionless key "${key}" is listed twice.`);
+              } else if (`${key}.html` === shell || `${key}.html` === errorPage) {
+                problems.push(`extensionless key "${key}" would be uploaded from ${key}.html, which is already the shell or the error page.`);
+              }
+              seen.add(key);
+            }
+          }
+          stopIfProblems();
+
+          for (const file of [shell, errorPage, ...extensionless.map((key) => `${key}.html`)]) {
+            if (!existsSync(`dist/${file}`)) problems.push(`dist/${file} is missing, but the route manifest says it ships.`);
+          }
+          if (existsSync('dist/api')) {
+            problems.push('dist/api/ exists. CloudFront routes /api/* to the contact-form Lambda, so nothing under it can be served from S3. Move it out of public/api/.');
+          }
+          stopIfProblems();
+
+          appendFileSync(
+            process.env.GITHUB_ENV,
+            `SHELL_KEY=${shell}\nERROR_KEY=${errorPage}\nPAGE_KEYS=${extensionless.join(' ')}\n`,
+          );
+          console.log(`route manifest: shell=${shell} errorPage=${errorPage} extensionless=${extensionless.join(' ')}`);
+          NODE
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-session-name: osep-website-deploy-${{ github.run_id }}
+          # Always us-east-1: the bucket, the CloudFront certificate and SES
+          # all live there.
+          aws-region: us-east-1
+
+      - name: Upload new files (nothing deleted yet)
+        # Everything except the pages and the three metadata files goes up with
+        # a one-year immutable lifetime:
+        #   - assets/: Vite puts a content hash in every filename, so a changed
+        #     file is a new key and an old key's content never changes.
+        #   - images/, favicons, the share image: not hashed, but immutable by
+        #     house rule. A changed file gets a new name (-v2), never new bytes
+        #     under the old one (CLAUDE.md, Conventions > Images). ci.yml's
+        #     check job fails a pull request that changes a file in public/ in
+        #     place, except the three metadata files the next step uploads
+        #     with a short cache lifetime.
+        #
+        # Excluded here, and uploaded by the next step with headers of their own:
+        #   - the shell and the error page (index.html, 404.html): fixed keys
+        #     whose content changes on every build;
+        #   - sitemap.xml, llms.txt, robots.txt: fixed keys edited in place;
+        #   - each extensionless page, as TWO exact excludes (see below);
+        #   - api/*: never touched by this workflow at all (see below).
+        # Leaving any of them in this sync would stamp it immutable for a year,
+        # and a browser or edge that cached it would keep the stale copy.
+        #
+        # Two exact excludes per page, never a prefix like "es*":
+        #   es.html  the local build output. It must not ship under that name;
+        #            the next step uploads it to the extensionless key instead.
+        #   es       that extensionless key in the bucket. It has no counterpart
+        #            in dist/, so without this exclude the prune step's --delete
+        #            would remove the live /es page.
+        # A prefix would match both with one pattern, and that is why it is
+        # wrong: it also matches every other key that starts with those letters.
+        # Rename /es-faq to /es-help and "es*" would keep shielding the retired
+        # es-faq key from --delete, leaving the old URL live and indexable with
+        # nothing linking to it. Exact excludes let the prune retire a removed
+        # page in the same deploy that removes it.
+        #
+        # api/*: CloudFront sends /api/* to the contact-form Lambda, so no S3
+        # object under api/ is ever served, and this workflow must neither
+        # create nor delete one. Excluding the pattern removes api/ keys from
+        # both sides of the comparison: the sync cannot upload one (and the
+        # manifest step already failed the deploy if dist/api/ exists) and the
+        # prune's --delete cannot remove one. ("*" in an S3 CLI pattern matches
+        # across slashes, so this covers every depth.)
+        #
+        # The page excludes come from PAGES, which the `read` line fills. Bash
+        # here runs without `set -u`, and even with it a misspelled array
+        # expands to nothing, so a typo in that line or in the loop would build
+        # a list with no page excludes and no error. So, before the sync, the
+        # list is checked against $PAGE_KEYS split on its own (unquoted, which
+        # is safe: the manifest step let through only kebab-case keys): every
+        # page key must be in it as its two exact excludes, and at least one
+        # key must have been checked, or the step fails before touching the
+        # bucket.
+        # Here a miss would ship es.html as a year-long immutable copy of the
+        # page; in the prune step, which runs the same check, it would delete
+        # the live /es page.
+        run: |
+          if [ -z "${SHELL_KEY:-}" ] || [ -z "${ERROR_KEY:-}" ] || [ -z "${PAGE_KEYS:-}" ]; then
+            echo "::error::Route manifest values are not in the environment. The 'Read the route manifest' step must run before this one."
+            exit 1
+          fi
+          read -r -a PAGES <<< "$PAGE_KEYS"
+          EXCLUDES=(
+            --exclude "api/*"
+            --exclude "$SHELL_KEY"
+            --exclude "$ERROR_KEY"
+            --exclude "sitemap.xml"
+            --exclude "llms.txt"
+            --exclude "robots.txt"
+          )
+          for key in "${PAGES[@]}"; do
+            EXCLUDES+=(--exclude "$key" --exclude "$key.html")
+          done
+          # Check the list before using it (see the comment above this script).
+          checked=0
+          for key in $PAGE_KEYS; do
+            case " ${EXCLUDES[*]} " in
+              *" --exclude $key --exclude $key.html "*) checked=$((checked + 1)) ;;
+              *) echo "::error::The exclude list does not shield the page key $key by name. Refusing to sync."; exit 1 ;;
+            esac
+          done
+          [ "$checked" -gt 0 ] || { echo "::error::No page key was checked against the exclude list. Refusing to sync."; exit 1; }
+          aws s3 sync dist/ "s3://$SITE_BUCKET" \
+            --cache-control "public, max-age=31536000, immutable" \
+            --no-progress \
+            "${EXCLUDES[@]}"
+
+      - name: Upload pages and metadata with short cache lifetimes
+        # Copied with `s3 cp`, not synced: sync skips a file whose size and
+        # timestamp look unchanged, which would leave an old header in place,
+        # while cp always writes the object with the headers given here.
+        #
+        # Pages: max-age=0, must-revalidate, so browsers and edges check back
+        # on every request and a deploy is visible at once. Content-Type is set
+        # explicitly on all of them, and must be: the extensionless keys have no
+        # file extension to guess from, and S3 would label them
+        # binary/octet-stream, which browsers download instead of showing.
+        #   - the shell (index.html), served at /;
+        #   - the error page (404.html), the body CloudFront returns for every
+        #     missing path. There is no fallback to the homepage, so this key
+        #     must exist, and a stale copy is a stale 404 page on every typo;
+        #   - each extensionless page: dist/es.html goes to the key `es`, the
+        #     URL the site actually uses (/es). prerender.mjs fails the build if
+        #     a page's file is not named <key>.html, and the manifest step has
+        #     already checked that each one exists.
+        #
+        # Metadata: one hour. They change in place, so not immutable, but
+        # crawlers do not need them to the second. Content-Type is set because
+        # llms.txt contains Spanish (accented letters): text/plain without a
+        # charset leaves the browser guessing the encoding. Each of these is
+        # excluded from both syncs, so one dropped from the build would never be
+        # pruned (and cp of a missing file would fail the job): remove it
+        # explicitly instead.
+        run: |
+          if [ -z "${SHELL_KEY:-}" ] || [ -z "${ERROR_KEY:-}" ] || [ -z "${PAGE_KEYS:-}" ]; then
+            echo "::error::Route manifest values are not in the environment. The 'Read the route manifest' step must run before this one."
+            exit 1
+          fi
+          read -r -a PAGES <<< "$PAGE_KEYS"
+          upload_page() { # <file in dist/> <S3 key>
+            aws s3 cp "dist/$1" "s3://$SITE_BUCKET/$2" \
+              --content-type "text/html" \
+              --cache-control "public, max-age=0, must-revalidate" \
+              --no-progress
+          }
+          upload_page "$SHELL_KEY" "$SHELL_KEY"
+          upload_page "$ERROR_KEY" "$ERROR_KEY"
+          for key in "${PAGES[@]}"; do
+            upload_page "$key.html" "$key"
+          done
+          for file in sitemap.xml llms.txt robots.txt; do
+            case "$file" in
+              *.xml) type="application/xml" ;;
+              *) type="text/plain; charset=utf-8" ;;
+            esac
+            if [ -f "dist/$file" ]; then
+              aws s3 cp "dist/$file" "s3://$SITE_BUCKET/$file" \
+                --content-type "$type" \
+                --cache-control "public, max-age=3600" \
+                --no-progress
+            else
+              aws s3 rm "s3://$SITE_BUCKET/$file"
+            fi
+          done
+
+      - name: Invalidate CloudFront and wait for it
+        # Named paths only, never "/*". Hashed assets get new names on every
+        # build, so nothing cached under an old name is ever wrong, and paying
+        # to invalidate them buys nothing. The list comes from the same manifest
+        # as the uploads, so the two cannot drift apart:
+        #   /                 the root URL, cached under "/" (CloudFront serves
+        #                     it from index.html but caches it by the URL asked)
+        #   /index.html       the shell under its own key
+        #   /404.html         the error page
+        #   /sitemap.xml /llms.txt /robots.txt
+        #   /<key>            each extensionless page (/es)
+        # No trailing-slash forms: the canonical-host CloudFront Function
+        # redirects /es/ to /es before the cache is consulted, so nothing is
+        # cached under them.
+        #
+        # Waiting (up to ten minutes, polling every 20 seconds) means a green
+        # run is a deploy every edge location is serving, and it holds back the
+        # prune below until no edge can still hand out an old page that points
+        # at files the prune is about to delete. If the wait times out the job
+        # fails with the new site already live and the prune not yet run: old
+        # files linger harmlessly until the next deploy removes them.
+        run: |
+          if [ -z "${SHELL_KEY:-}" ] || [ -z "${ERROR_KEY:-}" ] || [ -z "${PAGE_KEYS:-}" ]; then
+            echo "::error::Route manifest values are not in the environment. The 'Read the route manifest' step must run before this one."
+            exit 1
+          fi
+          read -r -a PAGES <<< "$PAGE_KEYS"
+          PATHS=("/" "/$SHELL_KEY" "/$ERROR_KEY" "/sitemap.xml" "/llms.txt" "/robots.txt")
+          for key in "${PAGES[@]}"; do
+            PATHS+=("/$key")
+          done
+          echo "Invalidating: ${PATHS[*]}"
+          INVALIDATION_ID=$(aws cloudfront create-invalidation \
+            --distribution-id "$DISTRIBUTION_ID" \
+            --paths "${PATHS[@]}" \
+            --query 'Invalidation.Id' \
+            --output text)
+          echo "Invalidation $INVALIDATION_ID created; waiting for it to complete."
+          aws cloudfront wait invalidation-completed \
+            --distribution-id "$DISTRIBUTION_ID" \
+            --id "$INVALIDATION_ID"
+          echo "Invalidation $INVALIDATION_ID completed."
+
+      - name: Delete files the build no longer produces
+        # The same sync as the upload step, with the same excludes and the same
+        # header, plus --delete. Everything new is already up, so in practice it
+        # only deletes: last build's hashed CSS, JS and fonts, an image retired
+        # by a rename, and the key of a page removed from the route registry
+        # (no longer in the manifest, so no longer excluded).
+        #
+        # It never deletes the live pages or the metadata files (excluded by
+        # exact name, and freshly uploaded above) and never touches api/*.
+        # Keep the EXCLUDES list, the `read` line that fills PAGES before it,
+        # and the check after it identical to the upload step's: anything left
+        # out of this list but missing from dist/ is deleted from production.
+        # Without `set -u`, bash expands a misspelled variable or array to
+        # nothing, so a typo in the `read` line, the loop or the sync's
+        # "${EXCLUDES[@]}" would make this sync delete the live /es page.
+        #
+        # Two guards. At run time, the check before the sync (the upload
+        # step's comment explains it) fails the step unless every key in
+        # $PAGE_KEYS is excluded by name. Before that,
+        # src/__tests__/deploy-workflow.test.ts (run by the build job above,
+        # so it stops this very run) fails if the two lists differ, if either
+        # step's list is not filled by that exact `read` line and loop, if
+        # either loses the exact page, metadata or api/* excludes, if either
+        # step runs anything between the list and its sync but that check, if
+        # either sync stops ending with "${EXCLUDES[@]}" (dropped, misspelled,
+        # or cut off by a line without its trailing backslash), if this sync
+        # is anything but the upload's plus --delete, or if --delete appears
+        # anywhere but here.
+        run: |
+          if [ -z "${SHELL_KEY:-}" ] || [ -z "${ERROR_KEY:-}" ] || [ -z "${PAGE_KEYS:-}" ]; then
+            echo "::error::Route manifest values are not in the environment. The 'Read the route manifest' step must run before this one."
+            exit 1
+          fi
+          read -r -a PAGES <<< "$PAGE_KEYS"
+          EXCLUDES=(
+            --exclude "api/*"
+            --exclude "$SHELL_KEY"
+            --exclude "$ERROR_KEY"
+            --exclude "sitemap.xml"
+            --exclude "llms.txt"
+            --exclude "robots.txt"
+          )
+          for key in "${PAGES[@]}"; do
+            EXCLUDES+=(--exclude "$key" --exclude "$key.html")
+          done
+          # Check the list before using it (see the upload step's comment).
+          checked=0
+          for key in $PAGE_KEYS; do
+            case " ${EXCLUDES[*]} " in
+              *" --exclude $key --exclude $key.html "*) checked=$((checked + 1)) ;;
+              *) echo "::error::The exclude list does not shield the page key $key by name. Refusing to sync."; exit 1 ;;
+            esac
+          done
+          [ "$checked" -gt 0 ] || { echo "::error::No page key was checked against the exclude list. Refusing to sync."; exit 1; }
+          aws s3 sync dist/ "s3://$SITE_BUCKET" \
+            --delete \
+            --cache-control "public, max-age=31536000, immutable" \
+            --no-progress \
+            "${EXCLUDES[@]}"

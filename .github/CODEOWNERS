@@ -1,0 +1,21 @@
+# OSE Partnership website: code owners
+#
+# GitHub auto-requests review from the listed owners when matching files
+# change. Add a ruleset that requires one approving
+# review from a code owner and the `check` and `infra` status checks
+# (infra/README.md step 0.3); a PR author can never approve their own PR, so
+# every path needs at least two owners or a PR on it can only merge by admin
+# bypass.
+#
+# Owners: the site's maintainers, volunteers from the partner organizations,
+# listed by their personal GitHub handles (update when the partnership's repo
+# and team are set up):
+#   @ladderuphousing  Tom Voutsos, site maintainer: code, CI, infra
+#   @demigreek        JD Vougiouklakis, site maintainer: code, CI, infra
+#   TODO: add Maria Iafelice (John Henry Eldred Jr. Foundation) once her GitHub
+#   account exists, at least on src/content/ and public/llms.txt, so content
+#   edits get her review.
+#
+# Syntax: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+*    @ladderuphousing @demigreek

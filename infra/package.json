@@ -1,0 +1,29 @@
+{
+  "name": "osep-website-infra",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AWS CDK app for the Old South End Partnership website (oseptoledo.org): S3 + CloudFront + WAF + ACM + SES contact form + GitHub OIDC deploy role",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "synth": "cdk synth",
+    "diff": "cdk diff",
+    "deploy": "cdk deploy",
+    "test": "vitest run && node --test test/*.node-test.mjs"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.273.0",
+    "constructs": "^10.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "aws-cdk": "^2.1145.0",
+    "cdk-nag": "^3.0.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.3"
+  }
+}

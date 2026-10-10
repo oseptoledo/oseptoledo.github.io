@@ -1,0 +1,10 @@
+node_modules
+cdk.out
+
+# Nothing in this package is compiled to disk (`npm run build` is tsc --noEmit
+# and cdk.json runs the app through ts-node), so any .js or .d.ts here is a
+# stray. The exception is functions/: those files are CloudFront Functions
+# source, read by lib/website-stack.ts at synth time.
+*.js
+!functions/*.js
+*.d.ts
